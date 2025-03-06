@@ -23,30 +23,30 @@
 #define MIN_HEAP_FOR_JSON 6000       // Минимальный размер свободной памяти (в байтах) для корректной обработки JSON
 #define HTTP_PREFIX "http://"        // Префикс для формирования HTTP-запросов
 
+// ===== Дефолтные значения настроек =====
+const String DEFAULT_SSID = "YourWIFI";           // Дефолтный SSID Wi-Fi сети
+const String DEFAULT_PASS = "YourPassword";       // Дефолтный пароль Wi-Fi
+const String DEFAULT_API_KEY = "YourAPIKey";      // Дефолтный API-ключ для OpenWeatherMap
+const String DEFAULT_CITY = "Moscow,ru";          // Дефолтный город для запроса погоды
+
 // ===== Структура настроек для EEPROM =====
 struct Settings {
   char ssid[32];         // SSID Wi-Fi (максимум 31 символ + терминатор '\0')
   char password[64];     // Пароль Wi-Fi (максимум 63 символа + терминатор '\0')
   char apiKey[64];       // API-ключ OpenWeatherMap (максимум 63 символа + терминатор '\0')
-  uint32_t magic;        // Магическая переменная для проверки валидности сохранённых настроек
+  char city[32];         // Город для запроса погоды (максимум 31 символ + терминатор '\0')
+  uint32_t magic;        // Магическая переменная для проверки корректности сохранённых настроек
 };
 
 // ===== Глобальные переменные =====
 Settings settings;              // Объект для хранения настроек, загружаемых/сохраняемых в EEPROM
 bool debug = DEBUG_ENABLED;     // Флаг отладки: если true – сообщения выводятся в Serial
 
-// Дефолтные значения для подключения к WiFi и API (при отсутствии сохранённых настроек)
-const String DEFAULT_SSID = "YourWIFI";           // Дефолтный SSID Wi-Fi сети
-const String DEFAULT_PASS = "YourPassword";       // Дефолтный пароль Wi-Fi
-const String DEFAULT_API_KEY = "YourAPIKey";      // Дефолтный API-ключ для OpenWeatherMap
-
 // Текущие значения настроек, которые могут быть изменены через веб-интерфейс или сохранены в EEPROM
 String WIFI_SSID = DEFAULT_SSID;
 String WIFI_PASS = DEFAULT_PASS;
 String API_KEY = DEFAULT_API_KEY;
-
-// Параметры запроса погоды
-String city = "Moscow,ru";    // Город для запроса погоды (формат "Город,код страны")
+String city = DEFAULT_CITY;     // Город для запроса погоды
 String units = "metric";      // Единицы измерения: "metric" – метрическая система (°C)
 
 // ===== Настройка дисплея 2.9" SSD1680 (3-цветного) =====
@@ -116,6 +116,8 @@ void saveSettings() {
   settings.password[sizeof(settings.password) - 1] = '\0';
   strncpy(settings.apiKey, API_KEY.c_str(), sizeof(settings.apiKey) - 1);
   settings.apiKey[sizeof(settings.apiKey) - 1] = '\0';
+  strncpy(settings.city, city.c_str(), sizeof(settings.city) - 1);
+  settings.city[sizeof(settings.city) - 1] = '\0';
   EEPROM.put(0, settings);              // Сохраняем всю структуру настроек в EEPROM, начиная с адреса 0
   EEPROM.commit();                      // Фиксируем изменения в EEPROM
   debugPrint("Настройки сохранены в EEPROM.");
@@ -130,16 +132,20 @@ void loadSettings() {
     WIFI_SSID = String(settings.ssid);  // Загружаем SSID из EEPROM
     WIFI_PASS = String(settings.password); // Загружаем пароль
     API_KEY = String(settings.apiKey);   // Загружаем API-ключ
+    city = String(settings.city);  // Загружаем город из EEPROM
+
     debugPrint("Загружены настройки из EEPROM:");
     debugPrint("SSID: " + WIFI_SSID);
     debugPrint("Password: " + WIFI_PASS);
     debugPrint("API Key: " + API_KEY);
+    debugPrint("City: " + city);
   } else {
     // Если настройки отсутствуют или повреждены, используем дефолтные значения и сохраняем их
     debugPrint("В EEPROM нет валидных настроек. Используем дефолтные.");
     WIFI_SSID = DEFAULT_SSID;
     WIFI_PASS = DEFAULT_PASS;
     API_KEY = DEFAULT_API_KEY;
+    city = DEFAULT_CITY;
     saveSettings();
   }
 }
@@ -191,12 +197,12 @@ void handleRoot() {
   // Добавляем стили для улучшения внешнего вида страницы
   html += "<style>body{font-family:Arial;margin:20px;}h1{color:#333;}input{margin:5px;padding:5px;width:200px;}</style>";
   html += "</head><body>";
-  html += "<h1>Настройка WiFi и API</h1>";
-  // Создаем форму для ввода SSID, пароля и API-ключа
+  html += "<h1>Настройка WiFi, API и города</h1>";
   html += "<form method='POST' action='/save'>";
   html += "WiFi SSID: <input type='text' name='ssid' maxlength='31' value='" + WIFI_SSID + "' required><br>";
   html += "WiFi Password: <input type='password' name='password' maxlength='63' value='" + WIFI_PASS + "' required><br>";
   html += "API Key: <input type='text' name='apikey' maxlength='63' value='" + API_KEY + "' placeholder='Оставьте пустым для дефолтного'><br>";
+  html += "Город: <input type='text' name='city' maxlength='31' value='" + city + "' required><br>";
   html += "<input type='submit' value='Сохранить' style='padding:10px;'>";
   html += "</form></body></html>";
   // Отправляем сформированную HTML-страницу с кодом 200 (OK)
@@ -205,26 +211,27 @@ void handleRoot() {
 
 // ===== Обработчик сохранения настроек =====
 void handleSave() {
-  // Проверяем наличие всех необходимых аргументов в POST-запросе
-  if (server.hasArg("ssid") && server.hasArg("password") && server.hasArg("apikey")) {
-    // Считываем новые настройки из запроса
+  if (server.hasArg("ssid") && server.hasArg("password") && server.hasArg("apikey") && server.hasArg("city")) {
     String newSSID = server.arg("ssid");
     String newPass = server.arg("password");
     String newAPIKey = server.arg("apikey");
+    String newCity = server.arg("city");
 
     // Валидация: проверяем, что длина введённых данных соответствует ограничениям
     if (newSSID.length() > 0 && newSSID.length() <= 31 &&
         newPass.length() > 0 && newPass.length() <= 63 &&
-        newAPIKey.length() <= 63) {
-      WIFI_SSID = newSSID;             // Обновляем SSID
-      WIFI_PASS = newPass;             // Обновляем пароль
-      // Если API-ключ не введён, оставляем дефолтное значение
+        newAPIKey.length() <= 63 &&
+        newCity.length() > 0 && newCity.length() <= 31) {
+      WIFI_SSID = newSSID;
+      WIFI_PASS = newPass;
       API_KEY = (newAPIKey.length() > 0) ? newAPIKey : DEFAULT_API_KEY;
+      city = newCity;
 
       debugPrint("Получены новые настройки:");
       debugPrint("SSID: " + WIFI_SSID);
       debugPrint("Password: " + WIFI_PASS);
       debugPrint("API Key: " + API_KEY);
+      debugPrint("City: " + city);
       saveSettings();                  // Сохраняем обновлённые настройки в EEPROM
       // Отправляем клиенту сообщение об успешном сохранении и перезагрузке
       server.send(200, "text/html", "<html><body><h1>Настройки сохранены. Перезагрузка...</h1><script>setTimeout(() => location.href='/', 2000);</script></body></html>");

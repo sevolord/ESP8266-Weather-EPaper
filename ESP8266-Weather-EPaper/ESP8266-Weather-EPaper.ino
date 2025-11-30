@@ -14,14 +14,12 @@
 // но для больших JSON-ответов (>16KB) рекомендуется использовать ESP32 из-за большего объёма SRAM.
 
 // ===== Константы =====
-#define DEBUG_ENABLED false           // Флаг включения отладочного вывода через Serial (true – вывод включён)
+#define DEBUG_ENABLED false          // Флаг включения отладочного вывода через Serial (true – вывод включён)
 #define EEPROM_SIZE 256              // Размер EEPROM (в байтах) для хранения настроек
 #define SETTINGS_MAGIC 0xDEADBEEF    // Магическая константа для проверки корректности данных в EEPROM
-#define MAX_HOURLY_FORECASTS 3       // Количество почасовых прогнозов, которые будут обрабатываться и отображаться
-#define MAX_DAILY_FORECASTS 7        // Максимальное количество дней в прогнозе, которые будут учтены
 #define NTP_TIMEOUT_MS 30000         // Тайм-аут (в мс) для запроса времени по NTP
 #define RETRY_DELAY_MS 10000         // Задержка (в мс) между повторными попытками запросов (например, NTP или API)
-#define MIN_HEAP_FOR_JSON 6000       // Минимальный размер свободной памяти (в байтах) для корректной обработки JSON
+#define MIN_HEAP_FOR_JSON 15000      // Минимальный размер свободной памяти (в байтах) для корректной обработки JSON
 #define HTTP_PREFIX "http://"        // Префикс для формирования HTTP-запросов
 
 // ===== Дефолтные значения настроек =====
@@ -29,7 +27,7 @@
 const String DEFAULT_SSID = SECRET_WIFI_SSID;           // Дефолтный SSID Wi-Fi сети
 const String DEFAULT_PASS = SECRET_WIFI_PASSWORD;       // Дефолтный пароль Wi-Fi
 const String DEFAULT_API_KEY = SECRET_WEATHER_API_KEY;  // Дефолтный API-ключ для OpenWeatherMap
-const String DEFAULT_CITY = SECRET_WEATHER_CITY;         // Дефолтный город для запроса погоды
+const String DEFAULT_CITY = SECRET_WEATHER_CITY;        // Дефолтный город для запроса погоды
 
 // ===== Структура настроек для EEPROM =====
 struct Settings {
@@ -61,8 +59,7 @@ U8G2_FOR_ADAFRUIT_GFX u8g2;  // Объект для работы с тексто
 
 // ===== Дни недели и месяцы =====
 // Массивы строк для отображения дней недели и названий месяцев (на русском языке)
-const char* wdayName[7] = { "Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота" };
-const char* wdayShortName[7] = { "Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб" };         
+const char* wdayName[7] = { "Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота" };    
 const char* monthName[12] = { "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря" };
 
 // ===== Данные погоды =====
@@ -71,19 +68,9 @@ char weatherDesc[32] = "";              // Описание текущей по�
 float weatherTemp = 0.0;                // Текущая температура (в °C)
 float windSpeed = 0.0;                  // Скорость ветра (в м/с)
 float feelsLike = 0.0;                  // Значение "ощущается как" (в °C)
-
-// Массивы для почасового прогноза погоды
-char forecastHourTime[MAX_HOURLY_FORECASTS][6]; // Массив строк для времени (формат HH:MM) почасового прогноза
-int16_t forecastHourTemp[MAX_HOURLY_FORECASTS];   // Массив температур для почасового прогноза
-
-// Переменные для прогноза погоды на завтра
-int16_t tomorrowMinInt = 0;             // Минимальная температура завтра
-int16_t tomorrowMaxInt = 0;             // Максимальная температура завтра
-
-// Переменные для прогноза погоды на последующие дни (до 6 дней)
-char fiveDaysNames[MAX_DAILY_FORECASTS][6]; // Массив для сокращённых названий дней (например, "Пн")
-int16_t fiveDaysTemp[MAX_DAILY_FORECASTS];  // Массив для средней температуры по дням
-int fiveDaysCount = 0;                      // Фактическое количество дней, для которых есть прогноз
+time_t sunrise = 0;                     // Время рассвета (Unix timestamp)
+time_t sunset = 0;                      // Время заката (Unix timestamp)
+int pressure = 0;                       // Атмосферное давление (в гПа/мбар)
 
 // Переменная для хранения времени последнего обновления данных
 unsigned long lastUpdateTime = 0;
@@ -371,6 +358,9 @@ bool fetchCurrentWeather() {
       weatherTemp = doc["main"]["temp"] | 0.0;
       windSpeed = doc["wind"]["speed"] | 0.0;
       feelsLike = doc["main"]["feels_like"] | 0.0;
+      sunrise = (time_t)(doc["sys"]["sunrise"] | 0);
+      sunset = (time_t)(doc["sys"]["sunset"] | 0);
+      pressure = doc["main"]["pressure"] | 0;
       debugPrint("Текущая погода: " + String(weatherDesc) + ", " + String(weatherTemp) + ", ветер: " + String(windSpeed));
       http.end();
       return true;               // Данные успешно получены
@@ -383,164 +373,17 @@ bool fetchCurrentWeather() {
   return false;
 }
 
-// ===== Запрос прогноза погоды  =====
-bool fetchForecast() {
-  const int maxAttempts = 5;          // Максимальное количество попыток запроса прогноза
-  // Массив адресов серверов для запроса прогноза погоды
-  const char* weatherHosts[] = { "api.openweathermap.org", "eu-api.openweathermap.org" };
-  int attempts = 0;
-  while (attempts < maxAttempts) {
-    for (int i = 0; i < 2; i++) {
-      String host = weatherHosts[i];
-      WiFiClient client;            // Клиент для работы с сетью
-      HTTPClient http;              // Объект для выполнения HTTP-запроса
-      // Формируем URL для запроса прогноза погоды с заданными параметрами
-      String url = HTTP_PREFIX + host + "/data/2.5/forecast?q=" + city + "&units=" + units + "&appid=" + API_KEY + "&lang=ru";
-      debugPrint("Запрос прогноза: " + url);
-      if (!http.begin(client, url)) {
-        debugPrint("Ошибка инициализации HTTP для прогноза с " + host);
-        continue;
-      }
-      int httpCode = http.GET();  // Отправляем GET-запрос
-      if (httpCode != HTTP_CODE_OK) {
-        debugPrint("Ошибка HTTP: " + String(httpCode) + " с " + host);
-        http.end();
-        continue;
-      }
-      int contentLength = http.getSize();  // Получаем размер ответа в байтах
-      debugPrint("Размер ответа прогноза: " + String(contentLength) + " байт");
-      WiFiClient* stream = http.getStreamPtr();  // Получаем поток данных ответа
-      if (!stream) {
-        debugPrint("Ошибка: не удалось получить поток данных!");
-        http.end();
-        continue;
-      }
-      if (ESP.getFreeHeap() < MIN_HEAP_FOR_JSON) {
-        debugPrint("Недостаточно памяти для обработки прогноза!");
-        http.end();
-        continue;
-      }
-      // Создаем динамический JSON-документ для обработки прогноза (подходит для 40 записей)
-      DynamicJsonDocument doc(6144);
-      DeserializationError error = deserializeJson(doc, *stream);
-      if (error) {
-        debugPrint("Ошибка парсинга JSON прогноза: " + String(error.c_str()));
-        http.end();
-        continue;
-      }
-      debugPrint("JSON прогноза успешно распарсен!");
-
-      time_t now = time(nullptr); // Получаем текущее время
-
-      // Обработка почасового прогноза (выбираем ближайшие 3 записи)
-      int countHourly = 0;
-      for (JsonVariant item : doc["list"].as<JsonArray>()) {
-        long dtVal = item["dt"].as<long>(); // Время прогноза (в секундах)
-        if (dtVal > now && countHourly < MAX_HOURLY_FORECASTS) {
-          time_t forecastTime = (time_t)dtVal;
-          struct tm tmForecast;
-          localtime_r(&forecastTime, &tmForecast);  // Преобразуем время в структуру tm
-          sprintf(forecastHourTime[countHourly], "%02d:%02d", tmForecast.tm_hour, tmForecast.tm_min); // Форматируем время в формате HH:MM
-          float tempVal = item["main"]["temp"] | 0.0;
-          forecastHourTemp[countHourly] = (int16_t)round(tempVal); // Сохраняем округлённую температуру
-          countHourly++;
-        }
-      }
-      // Если записей меньше, чем требуется, заполняем оставшиеся элементы значениями по умолчанию
-      for (int i = countHourly; i < MAX_HOURLY_FORECASTS; i++) {
-        strcpy(forecastHourTime[i], "--:--");
-        forecastHourTemp[i] = 0;
-      }
-
-      // Обработка прогноза на завтра
-      struct tm tmNow;
-      localtime_r(&now, &tmNow);       // Получаем текущую дату
-      tmNow.tm_hour = 0;
-      tmNow.tm_min = 0;
-      tmNow.tm_sec = 0;
-      time_t todayStart = mktime(&tmNow);         // Начало сегодняшнего дня (00:00)
-      time_t tomorrowStart = todayStart + 86400;    // Начало завтрашнего дня
-      time_t dayAfterTomorrowStart = tomorrowStart + 86400; // Начало послезавтра
-      float tMin = 1000.0;             // Инициализируем минимальную температуру очень большим значением
-      float tMax = -1000.0;            // Инициализируем максимальную температуру очень маленьким значением
-      bool foundTomorrow = false;      // Флаг для определения, найдены ли данные на завтра
-      for (JsonVariant item : doc["list"].as<JsonArray>()) {
-        long dtVal = item["dt"].as<long>();
-        if (dtVal >= tomorrowStart && dtVal < dayAfterTomorrowStart) {
-          float tempVal = item["main"]["temp"] | 0.0;
-          if (tempVal < tMin) tMin = tempVal;
-          if (tempVal > tMax) tMax = tempVal;
-          foundTomorrow = true;
-        }
-      }
-      if (foundTomorrow) {
-        tomorrowMinInt = (int16_t)round(tMin);
-        tomorrowMaxInt = (int16_t)round(tMax);
-      } else {
-        tomorrowMinInt = 0;
-        tomorrowMaxInt = 0;
-      }
-
-      // Обработка прогноза на последующие дни (до 6 дней)
-      struct Daily {
-        time_t dayStart; // Начало дня (00:00) для группировки данных
-        float sum;       // Сумма температур для расчёта среднего значения
-        int count;       // Количество замеров за день
-      };
-      Daily daily[MAX_DAILY_FORECASTS]; // Массив для хранения агрегированных данных по дням
-      int dailyCount = 0;               // Счетчик количества дней с данными
-      for (JsonVariant item : doc["list"].as<JsonArray>()) {
-        long dtVal = item["dt"].as<long>();
-        if (dtVal < todayStart + 86400) continue;  // Пропускаем данные за сегодняшний день
-        time_t dtTime = (time_t)dtVal;
-        struct tm itemTm;
-        localtime_r(&dtTime, &itemTm);
-        // Устанавливаем время на начало дня для корректной группировки
-        itemTm.tm_hour = 0;
-        itemTm.tm_min = 0;
-        itemTm.tm_sec = 0;
-        time_t itemDay = mktime(&itemTm);
-        int index = -1;
-        // Ищем, существует ли уже запись для данного дня
-        for (int i = 0; i < dailyCount; i++) {
-          if (daily[i].dayStart == itemDay) {
-            index = i;
-            break;
-          }
-        }
-        // Если записи для этого дня нет и лимит не превышен, создаём новую
-        if (index == -1 && dailyCount < MAX_DAILY_FORECASTS) {
-          index = dailyCount;
-          daily[dailyCount].dayStart = itemDay;
-          daily[dailyCount].sum = 0;
-          daily[dailyCount].count = 0;
-          dailyCount++;
-        }
-        // Если найден нужный индекс, добавляем данные температуры
-        if (index != -1) {
-          daily[index].sum += item["main"]["temp"] | 0.0;
-          daily[index].count++;
-        }
-      }
-      fiveDaysCount = min(dailyCount, MAX_DAILY_FORECASTS); // Ограничиваем количество дней прогнозирования
-      for (int i = 0; i < fiveDaysCount; i++) {
-        float avgTemp = daily[i].sum / daily[i].count;
-        fiveDaysTemp[i] = (int16_t)round(avgTemp); // Вычисляем среднюю температуру для дня
-        struct tm* dayTm = localtime(&daily[i].dayStart);
-        int wday = dayTm->tm_wday;   // Получаем день недели (0 – воскресенье, 1 – понедельник, ...)
-        // Присваиваем сокращённое название дня недели
-        strcpy(fiveDaysNames[i], wdayShortName[wday]);
-      }
-
-      http.end();                 // Завершаем HTTP-запрос
-      return true;                // Прогноз успешно получен и обработан
-    }
-    attempts++;
-    debugPrint("Повтор запроса прогноза через " + String(RETRY_DELAY_MS / 1000) + " секунд. Попытка: " + String(attempts));
-    delay(RETRY_DELAY_MS);         // Задержка перед повторной попыткой
+// ===== Функция для определения характеристики давления =====
+const char* getPressureDescription(int pressure) {
+  if (pressure < 1000) {
+    return "низкое";
+  } else if (pressure < 1025) {
+    return "нормальное";
+  } else if (pressure < 1035) {
+    return "повышенное";
+  } else {
+    return "высокое";
   }
-  drawError("Ошибка прогноза");      // Если прогноз не получен, выводим ошибку на дисплее
-  return false;
 }
 
 // ===== Отрисовка содержимого на дисплее =====
@@ -574,7 +417,7 @@ void drawAllContent() {
     u8g2.setForegroundColor(GxEPD_RED);
     u8g2.print(weekdayStr);
 
-    // Строка 2: Текущая погода (описание, температура, скорость ветра)
+    // Строка 2: Текущая погода (описание, температура)
     u8g2.setCursor(5, 40);
     u8g2.setForegroundColor(GxEPD_BLACK);
     if (strlen(weatherDesc) == 0 && weatherTemp == 0.0) {
@@ -584,52 +427,63 @@ void drawAllContent() {
       u8g2.print(", ");
       u8g2.setForegroundColor(GxEPD_RED);
       u8g2.print(String(weatherTemp));
-      u8g2.setForegroundColor(GxEPD_BLACK);
-      u8g2.print(", Ветер: " + String(windSpeed));
     }
 
-    // Строка 3: Значение "Ощущается как"
+    // Строка 3: Скорость ветра
     u8g2.setCursor(5, 60);
+    u8g2.setForegroundColor(GxEPD_BLACK);
+    u8g2.print("Ветер: ");
+    u8g2.setForegroundColor(GxEPD_RED);
+    u8g2.print(String(windSpeed));
+
+    // Строка 4: Значение "Ощущается как"
+    u8g2.setCursor(5, 80);
     u8g2.setForegroundColor(GxEPD_BLACK);
     u8g2.print("Ощущается как: ");
     u8g2.setForegroundColor(GxEPD_RED);
     u8g2.print(String(feelsLike));
 
-    // Строка 4: Почасовой прогноз (время и температура для каждого часа)
-    u8g2.setCursor(5, 80);
-    for (int i = 0; i < MAX_HOURLY_FORECASTS; i++) {
-      u8g2.setForegroundColor(GxEPD_BLACK);
-      u8g2.print(forecastHourTime[i]);
-      u8g2.print(" ");
-      u8g2.setForegroundColor(GxEPD_RED);
-      u8g2.print(String(forecastHourTemp[i]));
-      if (i < MAX_HOURLY_FORECASTS - 1) {
-        u8g2.setForegroundColor(GxEPD_BLACK);
-        u8g2.print("  ");
-      }
-    }
-
-    // Строка 5: Прогноз на завтра (минимальная и максимальная температура)
+    // Строка 5: Рассвет и закат
     u8g2.setCursor(5, 100);
     u8g2.setForegroundColor(GxEPD_BLACK);
-    u8g2.print("Завтра от ");
-    u8g2.setForegroundColor(GxEPD_RED);
-    u8g2.print(tomorrowMinInt);
-    u8g2.setForegroundColor(GxEPD_BLACK);
-    u8g2.print(" до ");
-    u8g2.setForegroundColor(GxEPD_RED);
-    u8g2.print(tomorrowMaxInt);
-
-    // Строка 6: Прогноз на последующие дни (сокращённое название дня и средняя температура)
-    u8g2.setCursor(5, 120);
-    for (int i = 0; i < fiveDaysCount; i++) {
+    u8g2.print("Рассвет: ");
+    if (sunrise > 0) {
+      struct tm* sunriseTm = localtime(&sunrise);
+      char sunriseStr[6];
+      sprintf(sunriseStr, "%02d:%02d", sunriseTm->tm_hour, sunriseTm->tm_min);
       u8g2.setForegroundColor(GxEPD_RED);
-      u8g2.print(fiveDaysNames[i]);
+      u8g2.print(sunriseStr);
+    } else {
+      u8g2.setForegroundColor(GxEPD_RED);
+      u8g2.print("--:--");
+    }
+    u8g2.setForegroundColor(GxEPD_BLACK);
+    u8g2.print(", Закат: ");
+    if (sunset > 0) {
+      struct tm* sunsetTm = localtime(&sunset);
+      char sunsetStr[6];
+      sprintf(sunsetStr, "%02d:%02d", sunsetTm->tm_hour, sunsetTm->tm_min);
+      u8g2.setForegroundColor(GxEPD_RED);
+      u8g2.print(sunsetStr);
+    } else {
+      u8g2.setForegroundColor(GxEPD_RED);
+      u8g2.print("--:--");
+    }
+
+    // Строка 6: Давление
+    u8g2.setCursor(5, 120);
+    u8g2.setForegroundColor(GxEPD_BLACK);
+    u8g2.print("Давление: ");
+    if (pressure > 0) {
+      u8g2.setForegroundColor(GxEPD_RED);
+      u8g2.print(String(pressure));
       u8g2.setForegroundColor(GxEPD_BLACK);
-      u8g2.print(fiveDaysTemp[i]);
-      if (i < fiveDaysCount - 1) {
-        u8g2.print(" ");
-      }
+      u8g2.print(" (");
+      u8g2.print(getPressureDescription(pressure));
+      u8g2.print(")");
+    } else {
+      u8g2.setForegroundColor(GxEPD_RED);
+      u8g2.print("--");
     }
 
   } while (display.nextPage());    // Завершаем обновление экрана
@@ -640,6 +494,7 @@ void setup() {
   Serial.begin(115200);             // Инициализируем последовательный порт для отладки
   debugPrint("Запуск...");
   initDisplay();                    // Инициализируем дисплей
+  
   loadSettings();                   // Загружаем сохранённые настройки из EEPROM
 
   // Пытаемся подключиться к WiFi в режиме станции (STA)
@@ -653,10 +508,9 @@ void setup() {
     }
   }
 
-  // Синхронизируем время через NTP, запрашиваем текущую погоду и прогноз, затем отображаем данные на дисплее
+  // Синхронизируем время через NTP, запрашиваем текущую погоду, затем отображаем данные на дисплее
   getNTPtime();
   fetchCurrentWeather();
-  fetchForecast();
 
   drawAllContent();                 // Отрисовываем полученные данные на дисплее
   lastUpdateTime = millis();        // Запоминаем время последнего обновления данных
@@ -664,12 +518,11 @@ void setup() {
 
 // ===== Основной цикл =====
 void loop() {
-  // Каждые 3600000 мс (1 час) обновляем данные (NTP, погоду, прогноз и отображение)
+  // Каждые 3600000 мс (1 час) обновляем данные (NTP, погоду и отображение)
   if (millis() - lastUpdateTime >= 3600000UL) {
     debugPrint("Обновление данных...");
     getNTPtime();
     fetchCurrentWeather();
-    fetchForecast();
     drawAllContent();
     lastUpdateTime = millis();
   }

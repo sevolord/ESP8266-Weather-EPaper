@@ -30,3 +30,7 @@
 *.exe
 *.out
 *.app
+
+# Secrets file (не синхронизируется с Git)
+ESP8266-Weather-EPaper/secrets.h
+**/secrets.h

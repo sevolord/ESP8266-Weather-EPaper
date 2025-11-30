@@ -8,6 +8,7 @@
 #include <ArduinoJson.h>                  // Библиотека для парсинга и генерации JSON
 #include <ESP8266WebServer.h>             // Библиотека для создания веб-сервера (режим точки доступа для настройки)
 #include <EEPROM.h>                       // Библиотека для работы с энергонезависимой памятью (EEPROM)
+#include "secrets.h"                      // Файл с секретными данными (SSID, пароль, API-ключ, город)
 
 // Примечание: Код оптимизирован для ESP8266, 
 // но для больших JSON-ответов (>16KB) рекомендуется использовать ESP32 из-за большего объёма SRAM.
@@ -24,10 +25,11 @@
 #define HTTP_PREFIX "http://"        // Префикс для формирования HTTP-запросов
 
 // ===== Дефолтные значения настроек =====
-const String DEFAULT_SSID = "YourWIFI";           // Дефолтный SSID Wi-Fi сети
-const String DEFAULT_PASS = "YourPassword";       // Дефолтный пароль Wi-Fi
-const String DEFAULT_API_KEY = "YourAPIKey";      // Дефолтный API-ключ для OpenWeatherMap
-const String DEFAULT_CITY = "Moscow,ru";          // Дефолтный город для запроса погоды
+// Значения берутся из файла secrets.h (не синхронизируется с Git)
+const String DEFAULT_SSID = SECRET_WIFI_SSID;           // Дефолтный SSID Wi-Fi сети
+const String DEFAULT_PASS = SECRET_WIFI_PASSWORD;       // Дефолтный пароль Wi-Fi
+const String DEFAULT_API_KEY = SECRET_WEATHER_API_KEY;  // Дефолтный API-ключ для OpenWeatherMap
+const String DEFAULT_CITY = SECRET_WEATHER_CITY;         // Дефолтный город для запроса погоды
 
 // ===== Структура настроек для EEPROM =====
 struct Settings {
